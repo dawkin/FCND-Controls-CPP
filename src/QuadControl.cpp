@@ -69,11 +69,22 @@ VehicleCommand QuadControl::GenerateMotorCommands(float collThrustCmd, V3F momen
   // You'll need the arm length parameter L, and the drag/thrust ratio kappa
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
+    const float l = L / sqrtf(2.f);
 
-  cmd.desiredThrustsN[0] = mass * 9.81f / 4.f; // front left
-  cmd.desiredThrustsN[1] = mass * 9.81f / 4.f; // front right
-  cmd.desiredThrustsN[2] = mass * 9.81f / 4.f; // rear left
-  cmd.desiredThrustsN[3] = mass * 9.81f / 4.f; // rear right
+    float t1 = momentCmd.x / l;
+    float t2 = momentCmd.y / l;
+    float t3 = momentCmd.z / kappa;
+    float t4 = collThrustCmd;
+
+  // cmd.desiredThrustsN[0] = mass * 9.81f / 4.f; // front left
+  // cmd.desiredThrustsN[1] = mass * 9.81f / 4.f; // front right
+  // cmd.desiredThrustsN[2] = mass * 9.81f / 4.f; // rear left
+  // cmd.desiredThrustsN[3] = mass * 9.81f / 4.f; // rear right
+
+    cmd.desiredThrustsN[0] = CONSTRAIN((t1 + t2 - t3 + t4) / 4.f ,minMotorThrust, maxMotorThrust);  // front left - f1
+    cmd.desiredThrustsN[1] = CONSTRAIN((-t1 + t2 + t3 + t4) / 4.f ,minMotorThrust, maxMotorThrust); // front right - f2
+    cmd.desiredThrustsN[2] = CONSTRAIN((t1 - t2 + t3 + t4) / 4.f ,minMotorThrust, maxMotorThrust); // rear left - f4
+    cmd.desiredThrustsN[3] = CONSTRAIN((-t1 - t2 - t3 + t4) / 4.f ,minMotorThrust, maxMotorThrust); // rear right - f3
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -98,7 +109,9 @@ V3F QuadControl::BodyRateControl(V3F pqrCmd, V3F pqr)
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
-  
+  V3F rate_error = pqrCmd - pqr;
+
+  momentCmd = V3F(Ixx, Iyy, Izz) * kpPQR * rate_error;
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -129,7 +142,19 @@ V3F QuadControl::RollPitchControl(V3F accelCmd, Quaternion<float> attitude, floa
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
+  float c = collThrustCmd / mass;
 
+  V3F b_actual = V3F(R(0, 2), R(1, 2), 0.f);
+  V3F b_cmd = V3F(accelCmd.x / c, accelCmd.y / c, 0.f);
+  b_cmd.constrain(-maxTiltAngle, maxTiltAngle);
+
+  V3F b_error = b_cmd - b_actual;
+
+  V3F b_c_dot = kpBank * b_error;
+
+  pqrCmd.x = (R(1, 0) * b_c_dot.x - R(0, 0) * b_c_dot.y) / R(2, 2);
+  pqrCmd.y = (R(1, 1) * b_c_dot.x - R(0, 1) * b_c_dot.y) / R(2, 2);
+  pqrCmd.z = 0.f;
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -161,7 +186,17 @@ float QuadControl::AltitudeControl(float posZCmd, float velZCmd, float posZ, flo
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
+  float z_error = (posZCmd - posZ);
+  float z_dot_cmd = (kpPosZ * z_error) + velZCmd;
+  z_dot_cmd = CONSTRAIN(z_dot_cmd, -maxAscentRate / dt, maxDescentRate / dt);
 
+  integratedAltitudeError += z_error * dt;
+
+
+  float z_dot_dot_cmd= kpVelZ * (z_dot_cmd - velZ) + (KiPosZ * integratedAltitudeError) + accelZCmd;
+
+
+  thrust = mass * ((float)CONST_GRAVITY - z_dot_dot_cmd) / R(2, 2);
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
   
@@ -199,7 +234,13 @@ V3F QuadControl::LateralPositionControl(V3F posCmd, V3F velCmd, V3F pos, V3F vel
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
-  
+  velCmd += kpPosXY * (posCmd - pos);
+  velCmd.constrain(-maxSpeedXY, maxSpeedXY);
+
+  accelCmd += kpVelXY * (velCmd - vel);
+
+  accelCmd.constrain(-maxAccelXY, maxAccelXY);
+  accelCmd.z = 0.0F;
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -222,6 +263,17 @@ float QuadControl::YawControl(float yawCmd, float yaw)
   float yawRateCmd=0;
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
+  float yaw_error = yawCmd - yaw;
+  yaw_error = fmodf(yaw_error, 2.0F * F_PI);
+  if (yaw_error > F_PI)
+  {
+      yaw_error -= 2.f * F_PI;
+  }
+  else if (yaw_error < -F_PI)
+  {
+      yaw_error += 2.f * F_PI;
+  }
+  yawRateCmd = kpYaw * yaw_error;
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
