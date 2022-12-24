@@ -1,58 +1,10 @@
-#include "Common.h"
-#include "QuadControl.h"
+# Building a Controler
 
-#include "Utility/SimpleConfig.h"
+## Generate Motor Command
 
-#include "Utility/StringUtils.h"
-#include "Trajectory.h"
-#include "BaseController.h"
-#include "Math/Mat3x3F.h"
+The following function update the command variable with a computed motor command based on the desired moment command following each axis and the general thrust inside the body frame.
 
-#ifdef __PX4_NUTTX
-#include <systemlib/param/param.h>
-#endif
-
-void QuadControl::Init()
-{
-  BaseController::Init();
-
-  // variables needed for integral control
-  integratedAltitudeError = 0;
-    
-#ifndef __PX4_NUTTX
-  // Load params from simulator parameter system
-  ParamsHandle config = SimpleConfig::GetInstance();
-   
-  // Load parameters (default to 0)
-  kpPosXY = config->Get(_config+".kpPosXY", 0);
-  kpPosZ = config->Get(_config + ".kpPosZ", 0);
-  KiPosZ = config->Get(_config + ".KiPosZ", 0);
-     
-  kpVelXY = config->Get(_config + ".kpVelXY", 0);
-  kpVelZ = config->Get(_config + ".kpVelZ", 0);
-
-  kpBank = config->Get(_config + ".kpBank", 0);
-  kpYaw = config->Get(_config + ".kpYaw", 0);
-
-  kpPQR = config->Get(_config + ".kpPQR", V3F());
-
-  maxDescentRate = config->Get(_config + ".maxDescentRate", 100);
-  maxAscentRate = config->Get(_config + ".maxAscentRate", 100);
-  maxSpeedXY = config->Get(_config + ".maxSpeedXY", 100);
-  maxAccelXY = config->Get(_config + ".maxHorizAccel", 100);
-
-  maxTiltAngle = config->Get(_config + ".maxTiltAngle", 100);
-
-  minMotorThrust = config->Get(_config + ".minMotorThrust", 0);
-  maxMotorThrust = config->Get(_config + ".maxMotorThrust", 100);
-#else
-  // load params from PX4 parameter system
-  //TODO
-  param_get(param_find("MC_PITCH_P"), &Kp_bank);
-  param_get(param_find("MC_YAW_P"), &Kp_yaw);
-#endif
-}
-
+```
 VehicleCommand QuadControl::GenerateMotorCommands(float collThrustCmd, V3F momentCmd)
 {
   // Convert a desired 3-axis moment and collective thrust command to 
@@ -85,7 +37,13 @@ VehicleCommand QuadControl::GenerateMotorCommands(float collThrustCmd, V3F momen
 
   return cmd;
 }
+```
 
+## Implemented body rate control
+
+The implementation of the body rate control is a proportional loop controler. 
+
+```
 V3F QuadControl::BodyRateControl(V3F pqrCmd, V3F pqr)
 {
   // Calculate a desired 3-axis moment given a desired and current body rate
@@ -112,8 +70,14 @@ V3F QuadControl::BodyRateControl(V3F pqrCmd, V3F pqr)
 
   return momentCmd;
 }
+```
 
-// returns a desired roll and pitch rate 
+
+## Implement roll/pitch control in C++
+
+The roll/pitch controler take acceleration command then translate it in roll/pitch command. From roll/pitch command we apply the transformation to body rate as input for the the body rate controler.
+This controler is also a simple proportional controler.
+```
 V3F QuadControl::RollPitchControl(V3F accelCmd, Quaternion<float> attitude, float collThrustCmd)
 {
   // Calculate a desired pitch and roll angle rates based on a desired global
@@ -158,7 +122,13 @@ V3F QuadControl::RollPitchControl(V3F accelCmd, Quaternion<float> attitude, floa
 
   return pqrCmd;
 }
+```
+![Attitude Control](./misc/Scenario_2.png "Attitude Control")
 
+## Implement altitude controller in C++
+The altitude controler is a feedforward PID controler which convert a position and velocity command to an acceleration command.
+
+```
 float QuadControl::AltitudeControl(float posZCmd, float velZCmd, float posZ, float velZ, Quaternion<float> attitude, float accelZCmd, float dt)
 {
   // Calculate desired quad thrust based on altitude setpoint, actual altitude,
@@ -193,12 +163,17 @@ float QuadControl::AltitudeControl(float posZCmd, float velZCmd, float posZ, flo
   
   thrust = -CONSTRAIN((accelZCmd - CONST_GRAVITY) / R(2, 2), -maxDescentRate / dt, maxAscentRate / dt) * mass;
 
+
   /////////////////////////////// END STUDENT CODE ////////////////////////////
   
   return thrust;
 }
+```
 
-// returns a desired acceleration in global frame
+## Implement lateral position control in C++
+
+The Lateral position controler is similar to the altitude controler without the integrated term which makes it a PD controler.
+```
 V3F QuadControl::LateralPositionControl(V3F posCmd, V3F velCmd, V3F pos, V3F vel, V3F accelCmdFF)
 {
   // Calculate a desired horizontal acceleration based on 
@@ -253,8 +228,13 @@ V3F QuadControl::LateralPositionControl(V3F posCmd, V3F velCmd, V3F pos, V3F vel
 
   return accelCmd;
 }
+```
 
-// returns desired yaw rate
+## Implement yaw control in C++
+
+This one is a P with a normalized error ranging from [-pi, pi]. 
+
+```
 float QuadControl::YawControl(float yawCmd, float yaw)
 {
   // Calculate a desired yaw rate to control yaw to yawCmd
@@ -287,23 +267,18 @@ float QuadControl::YawControl(float yawCmd, float yaw)
   return yawRateCmd;
 
 }
+```
 
-VehicleCommand QuadControl::RunControl(float dt, float simTime)
-{
-  curTrajPoint = GetNextTrajectoryPoint(simTime);
+![Position Control](./misc/Scenario_3.png "Position Control")
 
-  float collThrustCmd = AltitudeControl(curTrajPoint.position.z, curTrajPoint.velocity.z, estPos.z, estVel.z, estAtt, curTrajPoint.accel.z, dt);
+## Non-idealities and robustness
+In a realistic world assumptions and mistakes are often made on the model. Those assumption could lead in consistent error in the model. Also pertubation could prevent the controler to reach the desired state. A solution for this problem is to add an integrated term like we did in the altitude controler.
 
-  // reserve some thrust margin for angle control
-  float thrustMargin = .1f*(maxMotorThrust - minMotorThrust);
-  collThrustCmd = CONSTRAIN(collThrustCmd, (minMotorThrust+ thrustMargin)*4.f, (maxMotorThrust-thrustMargin)*4.f);
-  
-  V3F desAcc = LateralPositionControl(curTrajPoint.position, curTrajPoint.velocity, estPos, estVel, curTrajPoint.accel);
-  
-  V3F desOmega = RollPitchControl(desAcc, estAtt, collThrustCmd);
-  desOmega.z = YawControl(curTrajPoint.attitude.Yaw(), estAtt.Yaw());
+![Nonidealities](./misc/Scenario_4.png "Nonidealities")
 
-  V3F desMoment = BodyRateControl(desOmega, estOmega);
 
-  return GenerateMotorCommands(collThrustCmd, desMoment);
-}
+## Tracking Trajectories
+
+For this one it was required to fine tune the perameters of the positions and altitude controler to be able to track a trajectory. The difficulty was to pass this test without causing any regression regarding the previous tests.
+
+![Tracking](./misc/Scenario_5.png "Tracking")
